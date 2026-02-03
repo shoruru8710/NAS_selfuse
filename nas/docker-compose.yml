@@ -1,0 +1,38 @@
+services:
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+      - storage_data:/data/storage/objects
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - nas_network
+
+  db:
+    image: pgvector/pgvector:pg16
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nas_user} -d ${POSTGRES_DB:-nas_storage}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nas_network
+
+volumes:
+  postgres_data:
+  storage_data:
+
+networks:
+  nas_network:
+    driver: bridge

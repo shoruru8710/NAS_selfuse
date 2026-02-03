@@ -1,0 +1,856 @@
+NASクラウド化 仕様書（Claude実装用 / Django）
+0. 目的
+
+家庭内のNASを、友人（約10人）と共有できる「ログイン必須のクラウドストレージ」として運用する。外部からアクセス可能にする。公開・容量・コイン・本棚UI・検索・フォルダ階層を提供する。
+
+1. 前提環境
+1.1 ハード
+
+物理NAS上でサーバーを稼働
+
+NASのOSは問わない（Linux系想定）
+
+外部アクセス可能（ポート開放 or リバースプロキシ）
+
+1.2 ネットワーク
+
+ドメインを用意（例：storage.example.com）
+
+HTTPS必須（Let’s Encrypt想定）
+
+外部アクセスは常にTLS
+
+1.3 実行方式（推奨）
+
+Docker Composeで運用
+
+構成要素：
+
+Django（API + 管理画面）
+
+PostgreSQL
+
+Redis（任意：キャッシュ/ジョブ）
+
+Nginx（リバプロ・静的配信・TLS終端）
+
+※NASにDockerが無い場合は、同等構成をsystemdで構築してもよい。
+
+2. 認証
+
+Google OAuth（必須）
+
+未ログイン状態では何も見せない
+
+URL直打ちでも必ずログインへリダイレクト
+
+OTP（TOTP）は将来追加（現時点では不要）
+
+3. UI・画面要件
+3.1 個人ページ
+
+「自分のファイル」領域
+
+フォルダ階層
+
+自己流並び替え（フォルダ内の順序をユーザーが固定）
+
+サムネ設定（表紙用・背表紙用）
+
+3.2 公開情報タブ
+
+visibility=public の一覧を表示
+
+ただし閲覧はログイン済みユーザーのみ（外部公開は禁止）
+
+3.3 本棚UI
+
+フォルダ単位で表示モードを切替：
+
+cover（表紙配置）
+
+spine（背表紙配置）
+
+背表紙表示用に「細い縦長サムネ」も設定可能
+
+サムネが無い場合の代替：
+
+spine_title（短い文字列）
+
+spine_color（色）
+
+3.4 検索
+
+検索対象：ファイル名・フォルダ名
+
+スコープ：自分の領域 / 公開領域
+
+フォルダ内検索対応
+
+4. データモデル要件（概念）
+4.1 フォルダ
+
+親子関係で階層（parent_id）
+
+owner_id を持つ
+
+4.2 ファイル
+
+owner_id を持つ
+
+folder_id（ルート可）
+
+size_bytes
+
+last_access_at
+
+visibility：private / limited / paid / public
+
+MVPは private / public のみ使用
+
+5. NAS上のファイル配置（重要）
+5.1 実体ファイルの保存先
+
+NAS上の固定ディレクトリ（例：/data/storage/objects/）
+
+アップロードされた実体ファイルは UUIDで保存（元ファイル名と切り離す）
+
+例：/data/storage/objects/ab/cd/<file_uuid>.bin
+
+5.2 DBの役割
+
+ファイルメタ情報（元名・所有者・visibility・フォルダ・サムネ設定等）
+
+実体ファイルはNASファイルシステム、メタはDB
+
+5.3 サムネ格納
+
+自動生成 or ユーザー設定画像を使用
+
+背表紙用・表紙用は別で保持できること
+
+6. 容量制限
+6.1 初期クォータ
+
+private + limited 合算：2TB
+
+paid：256GB（将来用）
+
+6.2 追加容量（将来用）
+
+private/limited：128GB = 1コイン / 月
+
+paid：128GB = 2コイン / 月
+
+7. コイン
+
+内部ポイント（DB管理）
+
+最初は管理者が手動で付与（決済は外部で受け取り→手動加算）
+
+履歴（取引台帳）を必ず保持
+
+8. 月次課金と強制措置（強制公開あり）
+8.1 月初
+
+追加容量の引き落とし試行
+
+不足なら猶予状態
+
+8.2 月末（未払い）
+
+無料枠を超える 余剰データ を private に強制移動（隔離）
+
+どれを隔離したか記録（隔離リスト）
+
+8.3 翌翌月末（未解決）
+
+隔離リストから余剰分を満たすまで public に強制変更（強制公開）
+
+強制公開順序：
+
+public_priority（昇順）
+
+last_access_at（古い順）
+
+created_at（古い順）
+
+8.4 public_priority
+
+ファイルごとに整数
+
+小さいほど先に公開
+
+デフォルト1000
+
+ユーザーが任意に変更可能
+
+9. 並び順（自己流）
+
+フォルダ内でユーザーがドラッグ&ドロップで順序固定
+
+保存内容：
+
+folder_id
+
+item_type（file/folder）
+
+item_id
+
+sort_index（整数）
+
+10. セキュリティ要件
+
+全API認証必須
+
+公開ファイルでもログイン必須（外部公開禁止）
+
+アップロード/ダウンロードは権限チェック必須
+
+強制措置（隔離・公開）は監査ログ必須
+
+11. 運用要件（NASならでは）
+
+バックアップ：
+
+DBバックアップ（毎日）
+
+/data/storage/objects/ のスナップショット（可能なら）
+
+ログ：
+
+アクセスログ
+
+強制措置ログ
+
+ジョブ実行：
+
+月初バッチ
+
+月末バッチ
+
+翌翌月末バッチ
+
+12. 実装範囲（MVP）
+
+必須：
+
+Google OAuth
+
+My Files / Public タブ
+
+フォルダ階層
+
+アップロード/ダウンロード
+
+検索（名前のみ）
+
+手動並び替え
+
+表紙/背表紙表示モード切替
+
+cover_thumb / spine_thumb の設定
+
+public_priority の設定
+
+強制公開ロジック（バッチ）
+
+不要（将来）：
+
+limited（ACL）
+
+paid公開の実課金
+
+OTP
+
+自動決済連携
+
+これをそのままClaudeに貼って、
+
+「この仕様で Django + Docker Compose の雛形を作れ」
+
+「models.py と migration と admin を作れ」
+
+「API（DRF）を実装しろ」
+
+「月次バッチ（management command）を書け」
+の順に投げるのが最短。
+
+一点だけ確認せずに決め打ちする：
+NASが Synology / QNAP / 自作Linux どれでも、上の仕様は動くように書いてある。
+もしNASの種類が決まってるなら、その機種向けに「外部公開の安全な設定（リバプロ・証明書・ポート）」まで具体化できる。
+
+検索はタグ付＋RAG検索できるようにしたいかな
+
+了解マスター。NASクラウドの「検索」を タグ検索＋RAG検索 に拡張する前提で、Claudeに渡せるように 検索仕様だけ追加差分を書き足す（既存仕様書にこの章をそのままコピペでOK）。
+
+追加仕様：検索（タグ＋RAG）
+1. 検索の種類
+
+検索は2系統を提供する。
+
+1.1 タグ検索（メタデータ検索）
+
+対象：ファイル・フォルダ
+
+検索条件：
+
+タグ（複数）
+
+ファイル名・フォルダ名
+
+所有者（自分 / public）
+
+フォルダ配下限定
+
+出力：該当アイテム一覧
+
+1.2 RAG検索（内容検索）
+
+対象：ファイル本文（PDF/テキスト/Markdown/Officeなど）
+
+動作：
+
+クエリ文字列から関連チャンクをベクトル検索
+
+関連箇所（抜粋）＋参照元ファイルを返す
+
+オプションでLLM要約回答も返す（回答＋引用元）
+
+出力：
+
+検索結果（ファイル＋該当箇所）
+
+optional：回答（短文）＋引用（チャンク参照）
+
+2. 権限（必須）
+
+すべての検索はログイン必須
+
+スコープは2つ：
+
+my：自分のファイルのみ
+
+public：visibility=public のみ
+
+all：my + public
+
+検索結果に含めてよいのは「ユーザーが閲覧可能なアイテムのみ」
+
+RAGのチャンクも同様（閲覧不可ファイル由来チャンクは絶対に返さない）
+
+3. タグ仕様
+3.1 タグ付け対象
+
+file と folder にタグ付け可能
+
+タグはユーザー単位（他人の“自分用タグ”は見えない）
+
+ただし public領域向けに共有タグも用意する（面白さ/共有性優先）
+
+3.2 タグの種類
+
+private_tag：自分だけのタグ
+
+public_tag：public一覧で共有されるタグ（ログインユーザー全員に見える）
+
+3.3 タグ検索仕様
+
+AND/OR指定できる（MVPはANDのみでも可）
+
+タグ候補サジェスト（入力補助）を提供（頻出タグ上位N件）
+
+4. RAGインデックス仕様（NAS上で完結）
+4.1 取り込み対象（MVP）
+
+text/plain, markdown
+
+PDF（テキスト抽出できるもの）
+
+Office系は後回しでも可（将来拡張）
+
+4.2 チャンク化
+
+1ファイルをテキスト抽出→チャンク分割
+
+推奨：chunk_size 500〜1000 tokens相当、overlap 100〜200相当
+
+各チャンクに以下メタデータを付与：
+
+file_id
+
+owner_id
+
+visibility
+
+chunk_index
+
+source_hint（ページ番号、見出し、行番号など可能な範囲で）
+
+4.3 ベクトルDB
+
+どちらかで実装（MVP優先で1つ選ぶ）：
+
+A案：PostgreSQL + pgvector（運用が簡単）
+
+B案：Qdrant（性能と機能、運用は少し増える）
+
+4.4 埋め込み生成（Embedding）
+
+ファイル追加/更新時に非同期で埋め込みを生成して保存
+
+NAS上で完結させる場合：
+
+ローカル埋め込みモデルを利用（例：sentence-transformers系）
+
+ただしMVPで品質優先なら：
+
+外部API（OpenAI等）を使ってもよい（設定で切替可能にする）
+
+4.5 更新・削除
+
+ファイル更新：旧チャンクを全削除→再生成
+
+ファイル削除（論理削除含む）：チャンクも検索対象から除外（deleted_atなどでフィルタ）
+
+5. RAG検索API仕様
+5.1 エンドポイント
+
+GET /search/tags
+
+params: q, scope, folder_id?, tags?
+
+GET /search/rag
+
+params:
+
+q（必須）
+
+scope（my/public/all）
+
+folder_id?（フォルダ配下限定）
+
+top_k（デフォルト20）
+
+return_answer（true/false）
+
+POST /rag/reindex（管理者用）
+
+全再構築 or 対象file_id指定
+
+5.2 RAG検索レスポンス（例）
+
+results: [
+
+file_id, file_name, score,
+
+snippets: [{chunk_id, text_excerpt, source_hint}]
+]
+
+optional answer:
+
+text（短い回答）
+
+citations: [{file_id, chunk_id, source_hint}]
+
+6. ジョブ（必須）
+6.1 取り込みジョブ
+
+ファイルアップロード完了時に「インデックス作成ジョブ」をキュー投入
+
+ジョブは以下を実行：
+
+テキスト抽出
+
+チャンク化
+
+埋め込み生成
+
+ベクトルDB登録
+
+6.2 定期整合チェック（任意）
+
+NAS上の実体とDBがズレた場合の修復
+
+チャンク数・最終更新日時の整合確認
+
+7. UI要件（検索）
+
+検索バーに「タグ検索 / 内容検索（RAG）」の切替
+
+Publicタブ内検索：デフォルト scope=public
+
+My Files内検索：デフォルト scope=my
+
+RAG結果は「ファイル＋該当箇所」を必ず表示（どこ由来か分かる形）
+
+8. 将来拡張（今は不要）
+
+画像OCR（スキャンPDF、画像の文字）
+
+音声/動画の文字起こし
+
+フォルダ単位の“検索対象外”設定
+
+ユーザー別の埋め込みモデル選択
+
+Claudeに投げる時の指示テンプレ（そのまま使える）
+
+「上記仕様で、Django(REST) + PostgreSQL(+pgvector) を前提に models と migrations を作れ」
+
+「タグ検索APIとRAG検索APIを実装しろ（権限制約必須）」
+
+「アップロード後のRAGインデックス作成を Django management command + キュー（Celery or RQ）で実装しろ」
+
+「RAG検索の返却は file/snippet/citation を必ず含めろ」
+
+もし「ベクトルDBはpgvectorでいく」って決めるなら、俺がこの仕様をさらに “Claudeが迷わない選定済み版（pgvector固定・モデル固定・chunkパラメータ固定）” にして渡せる。今のままでも実装はできるけど、選択肢があるとAIがぶれやすい。
+
+後フロントはec2のサーバー上で
+NASのストレージにはapi経由で問い合わせるようにしたい
+つまり
+EC2（JSなどフロント）→EC2（Python）→NAS（Fastapi）tte
+
+了解、マスター。構成はこれで確定だね：
+
+EC2（フロントJS） → EC2（Python/Django：統合API） → NAS（FastAPI：ストレージ＆インデックス）
+
+この形に合わせて、Claudeが迷わないように “分割アーキテクチャ仕様” を追記する（これを仕様書の先頭に貼ればOK）。
+
+追加仕様：EC2⇄NAS 分割アーキテクチャ（Claude実装用）
+A. サービス分割（責務）
+A1. EC2 Front（JS）
+
+ブラウザに配信するUI（本棚UI・検索UI・アップロードUI）
+
+APIは EC2 API（Django）にだけアクセスする
+※ブラウザからNASへ直接アクセス禁止（CORS/セキュリティ/秘密情報の理由）
+
+A2. EC2 API（Python/Django, DRF推奨）
+
+認証・認可の中心（Google OAuth、セッション/JWT）
+
+画面に必要な「統合API」を提供
+
+NAS FastAPIとはサーバー間通信（EC2→NAS）
+
+コイン・月次バッチ・強制公開ロジックの“意思決定”はEC2側で実行
+
+DB（PostgreSQL）を保持（メタ情報・ユーザー・権限・並び順・サムネ設定・コイン台帳）
+
+A3. NAS API（FastAPI）
+
+実体ファイル保管（NAS上のファイルシステム）
+
+ファイルのアップ/ダウンロードを提供（ただしEC2経由で制御）
+
+RAG用インデックス作成・ベクトル検索（可能ならNAS側で完結）
+
+テキスト抽出・チャンク化・埋め込み生成（NAS側でジョブ実行）
+
+NASは「ストレージ＆検索エンジン」役。ビジネスルール（課金/強制公開）は持たない
+
+B. ネットワーク・セキュリティ前提
+
+NAS FastAPIは インターネットへ直公開しない
+
+EC2からNASへは以下いずれかで到達：
+
+VPN（推奨）
+
+VPC内プライベート接続（可能なら）
+
+もしくはNAS側をIP制限 + mTLS + 署名付きリクエスト（最悪案）
+
+B1. サーバー間認証（必須）
+
+EC2→NASの呼び出しは サービス間トークンで保護する。
+
+X-Service-Token: <shared_secret or JWT>
+
+NASはこれを検証できない呼び出しを拒否
+
+C. API境界（誰が何を知るか）
+C1. ブラウザが知って良いもの
+
+EC2 APIのアクセストークン/セッションのみ
+
+NASのURLやトークンは絶対にブラウザへ出さない
+
+C2. EC2 APIがやること（統合）
+
+UI用の「ファイル一覧」「Public一覧」「検索」「並び順」「サムネ設定」「public_priority設定」
+
+アップロード開始要求を受けたら：
+
+NASに「アップロード用URL or upload session」を発行させる
+
+ブラウザには EC2経由で使える形だけ返す
+（※最も安全なのは “ブラウザ→EC2→NAS” のストリーミングだが重い。後述参照）
+
+C3. NASがやること（原則）
+
+「バイナリを置く」「取り出す」「インデックス作る」「ベクトル検索する」
+
+ただし、最終的な閲覧許可判断はEC2で行う
+
+NASは “file_id が妥当か/存在するか” 程度だけで、ユーザー権限は持たない
+
+D. ファイル転送方式（2案）
+
+マスターの構成は可能だが、転送は2つの設計がある。どちらかを仕様として選ぶ。
+
+D1. 軽い構成（推奨：署名URL方式）
+
+ブラウザ → EC2（認証） → EC2がNASに「presigned upload/download URL」発行依頼
+
+ブラウザは NAS直ではなく、EC2が発行した “ワンタイムURL（短寿命）” に対してアップ/ダウンロード
+
+ただしこの場合、ブラウザがNASへ直接通信することになるため、NASを外に出せないなら不適
+
+→ NASを直公開しない前提だと成立しづらい
+
+D2. 確実構成（NAS非公開のまま：プロキシ方式）
+
+ブラウザ → EC2 API にアップロード（multipart）
+
+EC2 API が NAS に転送して保存
+
+ダウンロードも EC2 が NASから取ってブラウザへ中継
+
+→ 帯域/コストは増えるが、設計がシンプルで安全
+→ 少人数ならまずこれでMVPが最強
+
+仕様としては D2（プロキシ方式）を採用するのが堅い。
+（後でD1に最適化する拡張はできる）
+
+E. 検索（タグ＋RAG）の分担
+E1. タグ検索
+
+EC2側DBで実行（タグはメタ情報なのでEC2で完結）
+
+E2. RAG検索
+
+NASがベクトルDBを持ち、検索はNASで実行
+
+ただし結果返却はEC2が最終フィルタ
+
+EC2がNASへ rag_search(q, scope, folder_id?)
+
+NASが [(file_id, chunk_id, score, excerpt, source_hint)] を返す
+
+EC2が「ユーザーが見れるfile_idだけ」残してフロントへ返す
+
+F. 強制公開（課金ルール）とNASの関係
+
+強制公開の判定（誰の余剰、どれを移動）は EC2が決定
+
+実際の「visibility変更」「隔離対象マーク」はEC2のDB更新
+
+NASはそれに追従するだけ（必要ならファイルの物理移動やマーク付け）
+
+G. 必須エンドポイント（最小）
+G1. EC2 API（Django）
+
+GET /me/files?folder_id=...
+
+GET /public/files?folder_id=...
+
+GET /search/tags?q=...&scope=my|public|all
+
+GET /search/rag?q=...&scope=my|public|all
+
+POST /upload/init（メタ作成＋NASへ保存セッション開始）
+
+POST /upload/complete
+
+GET /download/{file_id}
+
+POST /items/{type}/{id}/view（cover/spineサムネ・背表紙設定）
+
+POST /folders/{id}/order
+
+POST /files/{id}/public-priority
+
+G2. NAS API（FastAPI）
+
+POST /storage/upload/init（EC2サービス認証必須）
+
+POST /storage/upload/put（プロキシならEC2が呼ぶ）
+
+GET /storage/download/{object_id}（EC2だけが呼ぶ）
+
+POST /rag/index/{file_id}
+
+GET /rag/search?q=...&top_k=...
+
+DELETE /rag/index/{file_id}
+
+H. Claudeへの指示テンプレ
+
+「この分割構成で、EC2側Django（DRF）とNAS側FastAPIのAPI契約を固定しろ」
+
+「NASは外部非公開。EC2→NASは X-Service-Token 必須」
+
+「ファイル転送はMVPはプロキシ方式（D2）で実装」
+
+「RAG検索はNASでベクトル検索、EC2で権限フィルタして返す」
+
+最後に：この構成で“迷いが出るポイント”の決め打ち
+
+マスターの要望と運用規模（友達10人）なら、まず **プロキシ方式（D2）**で行くのが一番速くて安全。
+後で帯域が辛くなったら「NAS直アクセス（D1）」に最適化する、でOK。
+
+この仕様をClaudeに投げれば、EC2(Django)とNAS(FastAPI)の2リポジトリで実装を始められる。
+
+次に欲しいのはどっち？
+
+Claude向けの「API契約（リクエスト/レスポンスJSON例）」
+
+Claude向けの「Django側モデル最小セット」
+
+Claude向けの「NAS側RAGパイプライン仕様（チャンク/埋め込み/pgvector or Qdrant固定）」
+
+マスターが何も言わなければ、俺は次の返答で API契約（JSON例つき） を出す。
+
+Dは後々EC2上でセキュリティチェックを挟んでからNasに投げたい
+
+了解、マスター。つまり 最終形はこうだね：
+
+ブラウザは 常にEC2だけを見る
+
+EC2が **セキュリティチェック（検疫/スキャン/ポリシー判定）**を挟む
+
+OKなものだけ NAS に保存・公開・インデックス化させる
+
+だからファイル転送は基本 EC2プロキシ（後で最適化しても“チェックは必ずEC2で通す”）
+
+この前提で、仕様書の「D（転送方式）」を チェック挟み込み必須版として書き換える。Claudeにはこの章だけ差し替えでOK。
+
+差し替え仕様：D. ファイル転送方式（EC2セキュリティチェック必須）
+D0. 目的
+
+アップロードされたコンテンツは EC2上でセキュリティチェックを完了するまでNASへ送らない。
+ダウンロード時も必要に応じて EC2で検査/権限判断をしてからクライアントへ返す。
+
+D1. アップロード（必須：EC2検疫→NAS保存）
+D1-1. フロー（MVP）
+
+ブラウザ → EC2(Django) POST /upload/init
+
+返却：upload_id、許可された最大サイズ、許可MIME、等
+
+ブラウザ → EC2(Django) POST /upload/{upload_id}/put（multipart）
+
+EC2は受信したファイルを **一時領域（quarantine）**に保存
+
+一時領域例：EC2ローカル /var/app/quarantine/ または EC2上のEBS
+
+EC2でセキュリティチェックを実行（同期 or 非同期）
+
+合格：NASへ転送して確定保存
+
+不合格：NASへ送らず破棄、理由を記録
+
+EC2 → NAS(FastAPI) POST /storage/commit
+
+EC2がファイル本体をストリーミング転送
+
+NASはobject_idを返す
+
+EC2(Django) POST /upload/{upload_id}/complete
+
+DBに object_id, size_bytes, hash を確定
+
+RAG対象なら NASへ POST /rag/index/{file_id} をキュー
+
+D2. セキュリティチェック要件（最小）
+
+MVP時点のチェックは「後から強化できるように段階化」する。
+
+D2-1. MVPで必須
+
+サイズ上限
+
+MIME/拡張子許可リスト
+
+ファイルハッシュ（SHA-256）計算
+
+ZIP等の爆弾対策（展開サイズ/階層数/ファイル数の上限）
+
+既知危険拡張子の拒否（exe, dll, js, vbs等は方針次第）
+
+D2-2. 後で追加（設計は最初から入口を作る）
+
+ウイルススキャン（ClamAV等）
+
+PDF/Officeのマクロ検査
+
+内容ポリシー判定（NSFW等）
+
+重複排除（同一hashの再利用）
+
+DLP（個人情報検出）※必要なら
+
+D2-3. チェック結果の記録（必須）
+
+upload_scan_results
+
+upload_id
+
+status（pending/approved/rejected）
+
+reasons（配列/文字列）
+
+sha256
+
+scanned_at
+
+D3. 一時領域（quarantine）仕様
+
+EC2上に確保（EBS推奨）
+
+容量上限と自動削除ポリシーを持つ
+
+approved になった時点でNASへ送った後、一時ファイルを削除
+
+pending が一定時間超えたら破棄（例：24h）
+
+D4. ダウンロード（EC2経由で制御）
+D4-1. フロー
+
+ブラウザ → EC2 GET /download/{file_id}
+
+EC2が権限チェック
+
+EC2 → NAS GET /storage/download/{object_id}
+
+EC2がブラウザへストリーミング返却
+
+※必要ならここに「再スキャン/レート制限/監査ログ」を挿入可能
+
+D5. NAS API（ストレージ）契約（最小）
+
+NASはインターネット非公開。EC2のみが呼べる。X-Service-Token必須。
+
+POST /storage/commit
+
+body: file binary stream + metadata（filename, mime, sha256, size）
+
+resp: {object_id, stored_bytes}
+
+GET /storage/download/{object_id}
+
+resp: binary stream
+
+DELETE /storage/{object_id}（将来：削除同期用）
+
+D6. 重要原則（Claude向け）
+
+ブラウザ→NAS直通信は禁止
+
+NAS保存は「EC2チェック合格後」だけ
+
+object_idはNASが発行し、EC2 DBが参照する
+
+チェックは今後強化される前提で、パイプラインとして実装すること

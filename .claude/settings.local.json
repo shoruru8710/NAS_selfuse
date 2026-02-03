@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git ls-remote:*)",
+      "Bash(git remote add:*)",
+      "Bash(docker --version)",
+      "Bash(docker compose version)"
+    ]
+  }
+}
