@@ -13,7 +13,8 @@ def search_rag(user, q, scope="all", folder_id=None, top_k=20, return_answer=Fal
 
     1. Call NAS /rag/search
     2. Filter results to only include files the user can access
-    3. Return filtered results
+    3. Optionally filter by folder_id
+    4. Return filtered results
     """
     # Call NAS RAG search
     nas_results = nas_client.search_rag(query=q, top_k=top_k)
@@ -25,15 +26,21 @@ def search_rag(user, q, scope="all", folder_id=None, top_k=20, return_answer=Fal
     accessible_file_ids = set()
 
     if scope in ("my", "all"):
-        owned_ids = File.objects.filter(
-            owner=user, id__in=result_file_ids
-        ).values_list("id", flat=True)
+        owned_qs = File.objects.filter(owner=user, id__in=result_file_ids)
+        # Apply folder_id filter if provided
+        if folder_id:
+            owned_qs = owned_qs.filter(folder_id=folder_id)
+        owned_ids = owned_qs.values_list("id", flat=True)
         accessible_file_ids.update(str(fid) for fid in owned_ids)
 
     if scope in ("public", "all"):
-        public_ids = File.objects.filter(
+        public_qs = File.objects.filter(
             visibility=File.Visibility.PUBLIC, id__in=result_file_ids
-        ).values_list("id", flat=True)
+        )
+        # Apply folder_id filter if provided
+        if folder_id:
+            public_qs = public_qs.filter(folder_id=folder_id)
+        public_ids = public_qs.values_list("id", flat=True)
         accessible_file_ids.update(str(fid) for fid in public_ids)
 
     # Filter results

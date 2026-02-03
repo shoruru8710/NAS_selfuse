@@ -137,3 +137,14 @@ CACHES = {
         "LOCATION": config("REDIS_URL", default="redis://redis:6379/0"),
     }
 }
+
+# Google OAuth
+GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
+GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")
+GOOGLE_REDIRECT_URI = config("GOOGLE_REDIRECT_URI", default="")
+
+# Authentication backends
+AUTHENTICATION_BACKENDS = [
+    "apps.accounts.backends.GoogleOAuthBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
