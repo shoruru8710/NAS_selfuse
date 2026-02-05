@@ -2,12 +2,34 @@ import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://shorunas.com';
 
+// Get CSRF token from cookie
+function getCsrfToken(): string | null {
+  const name = 'csrftoken';
+  const cookies = document.cookie.split(';');
+  for (const cookie of cookies) {
+    const trimmed = cookie.trim();
+    if (trimmed.startsWith(name + '=')) {
+      return trimmed.substring(name.length + 1);
+    }
+  }
+  return null;
+}
+
 const client = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
+});
+
+// Add CSRF token to all requests
+client.interceptors.request.use((config) => {
+  const csrfToken = getCsrfToken();
+  if (csrfToken && config.headers) {
+    config.headers['X-CSRFToken'] = csrfToken;
+  }
+  return config;
 });
 
 // API functions
